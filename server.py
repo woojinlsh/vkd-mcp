@@ -7,7 +7,7 @@ from mcp.server.fastmcp import FastMCP
 # 1. MCP 서버 초기화
 mcp = FastMCP("Verkada_Camera_Alerts")
 
-# 2. 환경변수에서 Verkada API 키 가져오기 (Render의 Environment Variables에 설정된 값)
+# 2. 환경변수에서 Verkada API 키 가져오기
 VERKADA_API_KEY = os.environ.get("VERKADA_API_KEY")
 BASE_URL = "https://api.verkada.com/cameras/v1/alerts" 
 HEADERS = {
@@ -17,21 +17,15 @@ HEADERS = {
 
 # 3. AI가 사용할 도구(Tool) 정의
 @mcp.tool()
-def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type: str = None) -> str:
+def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type: str = "") -> str:
     """
     특정 시간 범위 내의 Verkada 카메라 알림(Alerts) 이벤트를 조회합니다.
-    
-    :param start_time_iso: 시작 시간 (ISO 8601 형식, 예: "2026-04-01T00:00:00")
-    :param end_time_iso: 종료 시간 (ISO 8601 형식, 예: "2026-04-01T23:59:59")
-    :param notification_type: (선택) 쉼표로 구분된 알림 유형 
-           지원 값: person_of_interest, license_plate_of_interest, tamper, crowd, 
-                   motion, camera_offline, camera_online, line_crossing, loitering
     """
     if not VERKADA_API_KEY:
-        return "오류: 서버에 VERKADA_API_KEY 환경변수가 설정되지 않았습니다. Render 설정에서 추가해주세요."
+        return "오류: 서버에 VERKADA_API_KEY 환경변수가 설정되지 않았습니다."
 
     try:
-        # ISO 8601 문자열 -> Unix Timestamp(초 단위 정수)로 변환
+        # ISO 8601 문자열 -> Unix Timestamp 변환
         start_time_iso = start_time_iso.replace("Z", "+00:00")
         end_time_iso = end_time_iso.replace("Z", "+00:00")
         start_ts = int(datetime.fromisoformat(start_time_iso).timestamp())
@@ -49,7 +43,7 @@ def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type:
 
         all_alerts = []
         
-        # 데이터 조회 및 페이징(Pagination) 처리
+        # 페이징(Pagination) 처리
         while True:
             response = requests.get(BASE_URL, headers=HEADERS, params=params)
             response.raise_for_status()
@@ -58,17 +52,15 @@ def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type:
             alerts = data.get("alerts", [])
             all_alerts.extend(alerts)
             
-            # 다음 페이지가 있는지 확인
             next_page_token = data.get("next_page_token")
             if not next_page_token:
                 break
             params["page_token"] = next_page_token
 
-        # 결과가 없을 때의 처리
         if not all_alerts:
             return f"해당 기간({start_time_iso} ~ {end_time_iso})에 발생한 알림이 없습니다."
 
-        # LLM이 요약하기 쉽도록 결과 데이터 구조화
+        # 결과 요약
         summary = {
             "total_count": len(all_alerts),
             "alert_types_count": {},
@@ -79,7 +71,6 @@ def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type:
             a_type = a.get("notification_type", "unknown")
             summary["alert_types_count"][a_type] = summary["alert_types_count"].get(a_type, 0) + 1
             
-            # 상세 내역은 컨텍스트 한도를 위해 최대 10개까지만 추가
             if idx < 10:
                 occurred_at_ts = a.get("created_at") or a.get("timestamp")
                 time_str = datetime.fromtimestamp(occurred_at_ts).strftime('%Y-%m-%d %H:%M:%S') if occurred_at_ts else "시간 불명"
@@ -94,19 +85,15 @@ def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type:
     except Exception as e:
         return f"Verkada API 호출 중 오류가 발생했습니다: {str(e)}"
 
-# 4. 서버 실행 (Render 배포 환경 호환 - Uvicorn 직접 실행)
+# 4. 서버 실행 (Render 환경 호환)
 if __name__ == "__main__":
-    # Render에서 할당한 포트 번호 가져오기 (기본값 8000)
     port = int(os.environ.get("PORT", "8000"))
     print(f"Starting MCP Server on 0.0.0.0:{port} using Uvicorn...")
     
-    # mcp.run() 대신, 내부 ASGI 앱을 추출하여 외부 접속(0.0.0.0)을 명시적으로 허용하여 실행
-    # 버전에 따른 호환성을 위해 sse_app()이 없을 경우 _app을 사용하도록 처리
     app = getattr(mcp, "sse_app", None)
     if callable(app):
         app = app()
     elif app_attr := getattr(mcp, "_app", None):
         app = app_attr
 
-    # Uvicorn을 사용해 명시적으로 0.0.0.0과 포트를 지정하여 실행
     uvicorn.run(app, host="0.0.0.0", port=port)
