@@ -1,5 +1,6 @@
 import os
 import requests
+import uvicorn
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 
@@ -93,18 +94,22 @@ def get_camera_alerts(start_time_iso: str, end_time_iso: str, notification_type:
     except Exception as e:
         return f"Verkada API 호출 중 오류가 발생했습니다: {str(e)}"
 
-# 4. 서버 실행 (Render 배포 환경 호환)
+# 4. 서버 실행 (Render 배포 환경 호환 - Uvicorn 강제 설정 패치)
 if __name__ == "__main__":
-    # Render가 자동으로 할당해 주는 환경변수 PORT 값을 가져옴
-    port = os.environ.get("PORT", "8000")
+    # Render에서 할당한 포트 번호 가져오기 (기본값 8000)
+    port = int(os.environ.get("PORT", "8000"))
     
-    # FastMCP 내부 서버가 0.0.0.0(외부 접속 허용)과 해당 포트를 사용하도록 강제로 환경변수 세팅
-    os.environ["PORT"] = port
-    os.environ["FASTMCP_PORT"] = port
-    os.environ["HOST"] = "0.0.0.0"
-    os.environ["FASTMCP_HOST"] = "0.0.0.0"
+    # FastMCP 내부에 숨겨진 uvicorn.run 함수를 가로채서 Render 환경에 맞게 강제 수정 (Monkey Patch)
+    original_uvicorn_run = uvicorn.run
     
-    print(f"Starting MCP Server on port {port} using SSE...")
+    def patched_run(*args, **kwargs):
+        kwargs['host'] = '0.0.0.0'  # 외부에서 접속할 수 있도록 허용
+        kwargs['port'] = port       # Render가 요구하는 포트 번호 주입
+        original_uvicorn_run(*args, **kwargs)
+        
+    uvicorn.run = patched_run
     
-    # 에러가 발생했던 host, port 파라미터를 제거하고 SSE 방식으로 실행
+    print(f"Starting MCP Server on 0.0.0.0:{port} using SSE...")
+    
+    # SSE 방식으로 실행
     mcp.run(transport='sse')
